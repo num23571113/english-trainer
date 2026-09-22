@@ -103,7 +103,7 @@ type ReadingData = {
 
 const tabs = [
   ["dashboard", "🏠", "대시보드"],
-  ["vocabulary", "📚", "단어장"],
+  ["vocabulary", "📚", "단어 분석"],
   ["dictionary", "📔", "사전"],
   ["review", "🔄", "복습"],
   ["test", "📝", "오늘의 테스트"],
@@ -254,10 +254,27 @@ export default function Home() {
     return Math.round(total / currentWeek.length);
   }, [currentWeek, plans]);
 
+  const [dictSearch, setDictSearch] = useState("");
+
   // 저장 데이터 자체의 순서는 건드리지 않고, 사전 탭을 그릴 때만
-  // 알파벳순으로 묶는다. vocabulary가 커져도 정렬/저장 로직에는 영향 없음.
+  // 검색어로 거르고 알파벳순으로 묶는다. vocabulary가 커져도
+  // 정렬/저장 로직에는 영향 없음.
   const dictionaryGroups = useMemo(() => {
-    const sorted = [...vocabulary].sort((a, b) =>
+    const query = dictSearch.trim().toLowerCase();
+
+    const filtered = query
+      ? vocabulary.filter((item) => {
+          const word = item.word.toLowerCase();
+          const meanings =
+            item.analysis?.meanings
+              ?.map((m) => `${m.meaning} ${m.korean}`)
+              .join(" ")
+              .toLowerCase() || "";
+          return word.includes(query) || meanings.includes(query);
+        })
+      : vocabulary;
+
+    const sorted = [...filtered].sort((a, b) =>
       a.word.toLowerCase().localeCompare(b.word.toLowerCase())
     );
 
@@ -269,7 +286,7 @@ export default function Home() {
       groups.get(letter)!.push(item);
     }
     return groups;
-  }, [vocabulary]);
+  }, [vocabulary, dictSearch]);
 
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
@@ -462,6 +479,7 @@ export default function Home() {
 
   function openInDictionary(word: string) {
     const normalized = word.toLowerCase();
+    setDictSearch("");
     setHighlightWord(normalized);
     setTab("dictionary");
   }
@@ -1296,47 +1314,22 @@ export default function Home() {
                   />
 
                   <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-6">
-                    <h3 className="font-bold">내 단어장</h3>
+                    <h3 className="font-bold">📔 사전</h3>
 
                     <p className="mt-2 text-sm text-zinc-500">
                       현재 {vocabulary.length}개의 단어를 저장했습니다.
                     </p>
 
                     <button
-                      onClick={() => setTab("review")}
+                      onClick={() => setTab("dictionary")}
                       className="mt-5 w-full rounded-xl bg-zinc-800 px-4 py-3 text-sm hover:bg-zinc-700"
                     >
-                      복습하러 가기 →
+                      사전에서 전체 보기 →
                     </button>
                   </div>
                 </div>
               </div>
             )}
-
-            <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-6">
-              <h2 className="text-xl font-bold">
-                내 단어장 ({vocabulary.length})
-              </h2>
-
-              <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                {vocabulary.map((item) => (
-                  <button
-                    key={item.id}
-                    onClick={() => setAnalysis(item.analysis)}
-                    className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4 text-left hover:border-zinc-600"
-                  >
-                    <div className="font-semibold">{item.word}</div>
-                    <div className="mt-1 text-sm text-zinc-500">
-                      {item.analysis?.meanings?.[0]?.korean ||
-                        item.analysis?.meanings?.[0]?.meaning}
-                    </div>
-                    <div className="mt-3 text-xs text-zinc-600">
-                      숙련도 {item.mastery || 0}%
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
           </section>
         )}
 
@@ -1349,11 +1342,26 @@ export default function Home() {
 
             {vocabulary.length === 0 ? (
               <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-8 text-center text-zinc-500">
-                아직 저장한 단어가 없어요. 단어장 탭에서 먼저 단어를
+                아직 저장한 단어가 없어요. 단어 분석 탭에서 먼저 단어를
                 분석하고 저장해보세요.
               </div>
             ) : (
               <>
+                <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-4">
+                  <input
+                    value={dictSearch}
+                    onChange={(event) => setDictSearch(event.target.value)}
+                    placeholder="단어나 뜻으로 검색 (예: apple, 사과)"
+                    className="w-full rounded-2xl border border-zinc-700 bg-zinc-950 px-5 py-3 outline-none focus:border-zinc-400"
+                  />
+                </div>
+
+                {dictSearch && dictionaryGroups.size === 0 && (
+                  <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-8 text-center text-zinc-500">
+                    "{dictSearch}"에 해당하는 저장된 단어가 없어요.
+                  </div>
+                )}
+
                 {/* A-Z 인덱스 바: 저장된 단어가 없는 글자는 흐리게 비활성 */}
                 <div className="sticky top-[64px] z-20 -mx-4 border-b border-zinc-800 bg-zinc-950/95 px-4 py-3 backdrop-blur">
                   <div className="flex flex-wrap gap-1.5">
