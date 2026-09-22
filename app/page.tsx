@@ -341,24 +341,53 @@ export default function Home() {
   }
 
   async function callAI(action: string, payload: Record<string, unknown>) {
-    const response = await fetch("/api/ai", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        action,
-        ...payload,
-      }),
-    });
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 50000);
 
-    const data = await response.json();
+    try {
+      const response = await fetch("/api/ai", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action,
+          ...payload,
+        }),
+        signal: controller.signal,
+      });
 
-    if (!response.ok) {
-      throw new Error(data.error || "AI 요청에 실패했습니다.");
+      const text = await response.text();
+      let data: any = {};
+
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        throw new Error(
+          `AI 서버가 올바른 응답을 보내지 않았습니다. (HTTP ${response.status})`
+        );
+      }
+
+      if (!response.ok) {
+        const details = data?.details ? `\n${String(data.details).slice(0, 500)}` : "";
+        throw new Error(
+          `${data?.error || `AI 요청에 실패했습니다. (HTTP ${response.status})`}${details}`
+        );
+      }
+
+      if (!data?.result) {
+        throw new Error("AI 분석 결과가 비어 있습니다.");
+      }
+
+      return data.result;
+    } catch (error: any) {
+      if (error?.name === "AbortError") {
+        throw new Error("AI 응답이 너무 오래 걸리고 있습니다. 잠시 후 다시 시도해주세요.");
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeoutId);
     }
-
-    return data.result;
   }
 
   async function analyzeWord() {

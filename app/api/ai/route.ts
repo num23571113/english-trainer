@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
 
+export const maxDuration = 60;
+
+const NVIDIA_TIMEOUT_MS = 45000;
+
 const NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 
 type Action =
@@ -245,7 +249,10 @@ export async function POST(request: Request) {
 
     const prompt = buildPrompt(action, body);
 
-    const response = await fetch(NVIDIA_URL, {
+    let response: Response;
+
+    try {
+      response = await fetch(NVIDIA_URL, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -264,9 +271,28 @@ export async function POST(request: Request) {
           },
         ],
         temperature: 0.4,
-        max_tokens: 2500,
+        max_tokens: action === "analyzeWord" ? 1400 : action === "reading" ? 1600 : 1000,
+    signal: AbortSignal.timeout(NVIDIA_TIMEOUT_MS),
       }),
-    });
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "TimeoutError") {
+        return NextResponse.json(
+          { error: "NVIDIA AI 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요." },
+          { status: 504 }
+        );
+      }
+
+      return NextResponse.json(
+        {
+          error:
+            error instanceof Error
+              ? `NVIDIA API 연결 실패: ${error.message}`
+              : "NVIDIA API 연결에 실패했습니다.",
+        },
+        { status: 502 }
+      );
+    }
 
     const rawResponse = await response.text();
 
