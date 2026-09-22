@@ -272,9 +272,9 @@ export async function POST(request: Request) {
         ],
         temperature: 0.4,
         max_tokens: action === "analyzeWord" ? 1400 : action === "reading" ? 1600 : 1000,
-    signal: AbortSignal.timeout(NVIDIA_TIMEOUT_MS),
       }),
-      });
+      signal: AbortSignal.timeout(NVIDIA_TIMEOUT_MS),
+    });
     } catch (error) {
       if (error instanceof DOMException && error.name === "TimeoutError") {
         return NextResponse.json(
