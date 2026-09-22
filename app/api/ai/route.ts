@@ -16,6 +16,9 @@ function extractJson(text: string) {
   const cleaned = text
     .replace(/```json/gi, "")
     .replace(/```/g, "")
+    // Some reasoning models still leak a <think>...</think> block into the
+    // content field even with thinking disabled. Strip it defensively.
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
     .trim();
 
   const first = cleaned.indexOf("{");
@@ -271,7 +274,11 @@ export async function POST(request: Request) {
           },
         ],
         temperature: 0.4,
-        max_tokens: action === "analyzeWord" ? 1400 : action === "reading" ? 1600 : 1000,
+        max_tokens: action === "analyzeWord" ? 2000 : action === "reading" ? 2200 : 1400,
+        // Nemotron 3.5 Lightning defaults to "thinking" mode, which burns
+        // max_tokens on chain-of-thought before writing the JSON answer and
+        // can truncate or corrupt the JSON we need. Turn it off explicitly.
+        chat_template_kwargs: { enable_thinking: false },
       }),
       signal: AbortSignal.timeout(NVIDIA_TIMEOUT_MS),
     });
@@ -320,7 +327,18 @@ export async function POST(request: Request) {
       );
     }
 
+    const finishReason = data?.choices?.[0]?.finish_reason;
     const content = data?.choices?.[0]?.message?.content;
+
+    if (finishReason === "length" && (!content || content.length < 20)) {
+      return NextResponse.json(
+        {
+          error:
+            "AI 응답이 max_tokens 제한으로 잘렸습니다. 잠시 후 다시 시도해주세요.",
+        },
+        { status: 500 }
+      );
+    }
 
     if (!content) {
       return NextResponse.json(
