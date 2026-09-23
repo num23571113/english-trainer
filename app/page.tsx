@@ -154,6 +154,15 @@ function percent(done: number, goal: number) {
   return Math.min(100, Math.round((done / goal) * 100));
 }
 
+function escapeHtml(value: unknown) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
 function defaultPlan(): Plan {
   return {
     goalMinutes: 30,
@@ -190,6 +199,7 @@ export default function Home() {
   const [analysis, setAnalysis] = useState<WordAnalysis | null>(null);
   const [dictionaryHit, setDictionaryHit] = useState<string | null>(null);
   const [highlightWord, setHighlightWord] = useState<string | null>(null);
+  const [vocabularySearch, setVocabularySearch] = useState("");
 
   const [reviewIndex, setReviewIndex] = useState(0);
   const [reviewLoading, setReviewLoading] = useState(false);
@@ -236,6 +246,26 @@ export default function Home() {
       return !next || next <= now;
     });
   }, [vocabulary]);
+
+  const todayWords = useMemo(() => {
+    const todayKey = dateKey();
+    return vocabulary.filter((item) => {
+      const created = toDate(item.createdAt);
+      return created ? dateKey(created) === todayKey : false;
+    });
+  }, [vocabulary]);
+
+  const filteredVocabulary = useMemo(() => {
+    const query = vocabularySearch.trim().toLowerCase();
+    if (!query) return vocabulary;
+
+    return vocabulary.filter((item) => {
+      const meaning = item.analysis?.meanings?.[0]?.korean ||
+        item.analysis?.meanings?.[0]?.meaning ||
+        "";
+      return `${item.word} ${meaning}`.toLowerCase().includes(query);
+    });
+  }, [vocabulary, vocabularySearch]);
 
   const today = plans[dateKey()] || defaultPlan();
 
@@ -438,6 +468,90 @@ export default function Home() {
     } finally {
       window.clearTimeout(timeoutId);
     }
+  }
+
+  function exportVocabularyPdf(items: VocabularyItem[], title: string) {
+    if (typeof window === "undefined") return;
+
+    if (!items.length) {
+      setMessage("PDF로 저장할 단어가 없습니다.");
+      return;
+    }
+
+    const dateLabel = new Intl.DateTimeFormat("ko-KR", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    }).format(new Date());
+
+    const rows = items
+      .map((item, index) => {
+        const meanings = item.analysis?.meanings || [];
+        const meaningHtml = meanings.length
+          ? meanings
+              .slice(0, 3)
+              .map(
+                (meaning, meaningIndex) =>
+                  `<div class="meaning"><strong>${meaningIndex + 1}. ${escapeHtml(meaning.korean || meaning.meaning)}</strong>${
+                    meaning.example
+                      ? `<div class="example">“${escapeHtml(meaning.example)}”</div>`
+                      : ""
+                  }</div>`
+              )
+              .join("")
+          : `<div class="meaning">뜻 정보 없음</div>`;
+
+        return `<article class="word">
+          <div class="number">${String(index + 1).padStart(2, "0")}</div>
+          <div class="content">
+            <h2>${escapeHtml(item.word)}${
+              item.analysis?.pronunciation
+                ? ` <span>/${escapeHtml(item.analysis.pronunciation)}/</span>`
+                : ""
+            }</h2>
+            ${meaningHtml}
+          </div>
+        </article>`;
+      })
+      .join("");
+
+    const printWindow = window.open("", "_blank", "width=900,height=1000");
+    if (!printWindow) {
+      setMessage("팝업이 차단되었습니다. 브라우저에서 팝업을 허용해주세요.");
+      return;
+    }
+
+    printWindow.document.write(`<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>${escapeHtml(title)}</title>
+<style>
+  @page { size: A4; margin: 16mm; }
+  * { box-sizing: border-box; }
+  body { margin: 0; color: #18181b; font-family: Arial, "Malgun Gothic", sans-serif; background: white; }
+  header { border-bottom: 2px solid #18181b; padding-bottom: 12px; margin-bottom: 20px; }
+  h1 { margin: 0; font-size: 25px; }
+  .date { margin-top: 6px; color: #71717a; font-size: 12px; }
+  .count { float: right; font-size: 12px; color: #71717a; margin-top: 5px; }
+  .word { display: flex; gap: 14px; padding: 14px 0; border-bottom: 1px solid #e4e4e7; break-inside: avoid; }
+  .number { width: 30px; color: #a1a1aa; font-size: 12px; padding-top: 5px; }
+  .content { flex: 1; }
+  h2 { margin: 0 0 8px; font-size: 19px; }
+  h2 span { color: #71717a; font-size: 12px; font-weight: normal; }
+  .meaning { font-size: 13px; line-height: 1.55; margin-top: 4px; }
+  .example { color: #71717a; font-style: italic; margin-top: 2px; }
+  footer { margin-top: 24px; color: #a1a1aa; font-size: 10px; text-align: center; }
+</style>
+</head>
+<body>
+<header><div class="count">총 ${items.length}개</div><h1>${escapeHtml(title)}</h1><div class="date">${escapeHtml(dateLabel)}</div></header>
+${rows}
+<footer>English Trainer · Vocabulary</footer>
+<script>window.onload = () => { window.focus(); window.print(); };</script>
+</body>
+</html>`);
+    printWindow.document.close();
   }
 
   async function analyzeWord() {
@@ -1164,9 +1278,37 @@ export default function Home() {
         {tab === "vocabulary" && (
           <section className="space-y-6">
             <PageTitle
-              title="📚 단어 분석"
-              subtitle="영어 단어의 의미, 어원, 유의어, 반의어, 활용까지 분석합니다."
+              title="📚 단어장"
+              subtitle="저장한 영단어를 한눈에 보고 검색하거나 PDF로 저장할 수 있습니다."
             />
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
+                <div className="text-sm text-zinc-500">오늘의 단어</div>
+                <div className="mt-2 text-3xl font-bold">{todayWords.length}</div>
+                <div className="mt-1 text-sm text-zinc-500">오늘 저장한 단어</div>
+                <button
+                  onClick={() => exportVocabularyPdf(todayWords, `오늘의 영단어 · ${dateKey()}`)}
+                  disabled={!todayWords.length}
+                  className="mt-4 w-full rounded-xl bg-white px-4 py-3 text-sm font-semibold text-zinc-900 disabled:opacity-40"
+                >
+                  📄 오늘의 영단어 PDF
+                </button>
+              </div>
+
+              <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
+                <div className="text-sm text-zinc-500">전체 단어</div>
+                <div className="mt-2 text-3xl font-bold">{vocabulary.length}</div>
+                <div className="mt-1 text-sm text-zinc-500">내 단어장에 저장된 단어</div>
+                <button
+                  onClick={() => exportVocabularyPdf(vocabulary, "전체 영단어") }
+                  disabled={!vocabulary.length}
+                  className="mt-4 w-full rounded-xl bg-zinc-800 px-4 py-3 text-sm font-semibold text-white hover:bg-zinc-700 disabled:opacity-40"
+                >
+                  📕 전체 영단어 PDF
+                </button>
+              </div>
+            </div>
 
             <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
               <div className="flex flex-col gap-3 sm:flex-row">
@@ -1330,6 +1472,47 @@ export default function Home() {
                 </div>
               </div>
             )}
+
+            <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-6">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h2 className="text-xl font-bold">내 단어장 ({filteredVocabulary.length}/{vocabulary.length})</h2>
+                  <p className="mt-1 text-sm text-zinc-500">영어 단어 또는 한국어 뜻으로 검색할 수 있습니다.</p>
+                </div>
+                <input
+                  value={vocabularySearch}
+                  onChange={(event) => setVocabularySearch(event.target.value)}
+                  placeholder="🔍 단어 검색"
+                  className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm outline-none focus:border-zinc-400 sm:max-w-xs"
+                />
+              </div>
+
+              {filteredVocabulary.length === 0 ? (
+                <div className="mt-8 rounded-2xl bg-zinc-950 p-8 text-center text-sm text-zinc-500">
+                  {vocabulary.length ? "검색 결과가 없습니다." : "아직 저장한 단어가 없습니다."}
+                </div>
+              ) : (
+                <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  {filteredVocabulary.map((item) => (
+                    <button
+                      key={item.id}
+                      onClick={() => setAnalysis(item.analysis)}
+                      className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4 text-left hover:border-zinc-600"
+                    >
+                      <div className="font-semibold">{item.word}</div>
+                      <div className="mt-1 text-sm text-zinc-500">
+                        {item.analysis?.meanings?.[0]?.korean ||
+                          item.analysis?.meanings?.[0]?.meaning ||
+                          "뜻 정보 없음"}
+                      </div>
+                      <div className="mt-3 text-xs text-zinc-600">
+                        숙련도 {item.mastery || 0}%
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </section>
         )}
 

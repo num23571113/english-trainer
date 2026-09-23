@@ -36,6 +36,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# zip backups (never commit these — GitHub blocks files over 100MB)
+*.zip
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
