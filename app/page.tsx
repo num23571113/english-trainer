@@ -194,7 +194,7 @@ export default function Home() {
   const [vocabulary, setVocabulary] = useState<VocabularyItem[]>([]);
   const [plans, setPlans] = useState<Record<string, Plan>>({});
 
-  const [wordInput, setWordInput] = useState("abandon");
+  const [wordInput, setWordInput] = useState("");
   const [wordLoading, setWordLoading] = useState(false);
   const [analysis, setAnalysis] = useState<WordAnalysis | null>(null);
   const [dictionaryHit, setDictionaryHit] = useState<string | null>(null);
