@@ -14,6 +14,7 @@ type Action =
 
 function extractJson(text: string) {
   const cleaned = text
+    .replace(/^\uFEFF/, "")
     .replace(/```json/gi, "")
     .replace(/```/g, "")
     // Some reasoning models still leak a <think>...</think> block into the
@@ -21,14 +22,61 @@ function extractJson(text: string) {
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
     .trim();
 
-  const first = cleaned.indexOf("{");
-  const last = cleaned.lastIndexOf("}");
+  // Find the first complete JSON object instead of simply taking the last `}`.
+  // This is more tolerant of explanatory text or braces inside a generated string.
+  const start = cleaned.indexOf("{");
+  if (start < 0) return cleaned;
 
-  if (first >= 0 && last > first) {
-    return cleaned.slice(first, last + 1);
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < cleaned.length; i += 1) {
+    const ch = cleaned[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === "{") {
+      depth += 1;
+    } else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) return cleaned.slice(start, i + 1);
+    }
   }
 
-  return cleaned;
+  // If generation was cut off, return the partial object so the caller can
+  // retry instead of trying to parse unrelated trailing text.
+  return cleaned.slice(start);
+}
+
+function parseJsonSafely(text: string) {
+  const candidates = [text];
+
+  // Models occasionally leave a trailing comma before `}` or `]`. This repair
+  // is deliberately narrow so normal JSON is never altered unnecessarily.
+  const repaired = text.replace(/,\s*([}\]])/g, "$1");
+  if (repaired !== text) candidates.push(repaired);
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // Try the next narrowly repaired candidate.
+    }
+  }
+
+  return null;
 }
 
 function buildPrompt(action: Action, input: Record<string, unknown>) {
@@ -274,7 +322,7 @@ export async function POST(request: Request) {
           },
         ],
         temperature: 0.4,
-        max_tokens: action === "analyzeWord" ? 2000 : action === "reading" ? 2200 : 1400,
+        max_tokens: action === "analyzeWord" ? 3200 : action === "reading" ? 2400 : 1600,
         // Nemotron 3.5 Lightning defaults to "thinking" mode, which burns
         // max_tokens on chain-of-thought before writing the JSON answer and
         // can truncate or corrupt the JSON we need. Turn it off explicitly.
@@ -356,13 +404,63 @@ export async function POST(request: Request) {
 
     let result: any;
 
-    try {
-      result = JSON.parse(jsonText);
-    } catch {
+    result = parseJsonSafely(jsonText);
+
+    if (result === null && action === "analyzeWord") {
+      // Some models occasionally produce a malformed/truncated JSON response for
+      // a particular word. Retry once with a much shorter schema-focused prompt.
+      const word = String(body.word || "").trim();
+      try {
+        const retryResponse = await fetch(NVIDIA_URL, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              {
+                role: "system",
+                content: `Return ONLY one valid JSON object. No markdown, no code fences, no explanation. Analyze the English word and keep every string concise. Use exactly this shape: {"word":"","pronunciation":"","partOfSpeech":"","meanings":[{"meaning":"","korean":"","example":""}],"etymology":"","synonyms":[],"antonyms":[],"relatedWords":[],"collocations":[],"examples":[],"interviewUsage":"","academicUsage":""}`,
+              },
+              {
+                role: "user",
+                content: `Analyze this English word: ${word}`,
+              },
+            ],
+            temperature: 0.1,
+            max_tokens: 1800,
+            chat_template_kwargs: { enable_thinking: false },
+          }),
+          signal: AbortSignal.timeout(NVIDIA_TIMEOUT_MS),
+        });
+
+        if (retryResponse.ok) {
+          const retryData = await retryResponse.json();
+          const retryContent = retryData?.choices?.[0]?.message?.content;
+          if (retryContent) {
+            result = parseJsonSafely(
+              extractJson(
+                typeof retryContent === "string"
+                  ? retryContent
+                  : JSON.stringify(retryContent)
+              )
+            );
+          }
+        }
+      } catch (retryError) {
+        console.error("AI JSON retry failed", retryError);
+      }
+    }
+
+    if (result === null) {
       return NextResponse.json(
         {
           error: "AI가 올바른 JSON을 생성하지 못했습니다.",
-          raw: content,
+          details:
+            "생성 결과가 중간에 잘렸거나 JSON 형식이 깨졌습니다. 잠시 후 다시 시도해주세요.",
+          raw: String(content).slice(0, 4000),
         },
         { status: 500 }
       );
