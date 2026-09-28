@@ -73,6 +73,15 @@ type TestQuestion = {
   answer: number;
 };
 
+type ReviewQuizQuestion = {
+  itemId: string;
+  word: string;
+  meaning: string;
+  direction: "wordToMeaning" | "meaningToWord";
+  choices: string[];
+  answer: number;
+};
+
 type InterviewData = {
   question: string;
   context: string;
@@ -206,6 +215,19 @@ export default function Home() {
 
   const [reviewIndex, setReviewIndex] = useState(0);
   const [reviewLoading, setReviewLoading] = useState(false);
+  const [reviewMode, setReviewMode] = useState<"card" | "quiz">("card");
+  const [reviewQuizDifficulty, setReviewQuizDifficulty] = useState<"easy" | "normal" | "hard">("normal");
+  const [reviewQuizDirection, setReviewQuizDirection] = useState<"mixed" | "wordToMeaning" | "meaningToWord">("mixed");
+  const [reviewQuizQuestions, setReviewQuizQuestions] = useState<ReviewQuizQuestion[]>([]);
+  const [reviewQuizIndex, setReviewQuizIndex] = useState(0);
+  const [reviewQuizSelected, setReviewQuizSelected] = useState<number | null>(null);
+  const [reviewQuizScore, setReviewQuizScore] = useState(0);
+  const [reviewQuizAnswered, setReviewQuizAnswered] = useState(false);
+  const [reviewQuizFinished, setReviewQuizFinished] = useState(false);
+  const [reviewQuizWrongIds, setReviewQuizWrongIds] = useState<string[]>([]);
+  const [reviewQuizType, setReviewQuizType] = useState<"choice" | "typing">("choice");
+  const [reviewQuizTyped, setReviewQuizTyped] = useState("");
+  const [reviewQuizTypedCorrect, setReviewQuizTypedCorrect] = useState<boolean | null>(null);
 
   const [testQuestions, setTestQuestions] = useState<TestQuestion[]>([]);
   const [testIndex, setTestIndex] = useState(0);
@@ -660,57 +682,58 @@ ${rows}
     }
   }
 
+  async function recordReview(item: VocabularyItem, known: boolean, minutes = 2) {
+    if (!user) return;
+
+    const currentCount = item.reviewCount || 0;
+    const currentMastery = item.mastery || 0;
+
+    // 기존 데이터 구조를 유지하면서 간격 반복을 조금 더 안정적으로 만든다.
+    // 정답을 연속해서 맞힐수록 1 → 3 → 7 → 14 → 30 → 60 → 120일로 늘리고,
+    // 틀리면 다음 날 다시 등장하도록 reviewCount를 초기화한다.
+    const intervals = [1, 3, 7, 14, 30, 60, 120];
+    const nextDays = known
+      ? intervals[Math.min(currentCount, intervals.length - 1)]
+      : 1;
+    const mastery = known
+      ? Math.min(100, currentMastery + 15)
+      : Math.max(0, currentMastery - 15);
+
+    const ref = doc(
+      db,
+      "users",
+      user.uid,
+      "vocabulary",
+      item.id
+    );
+
+    await updateDoc(ref, {
+      reviewCount: known ? currentCount + 1 : 0,
+      mastery,
+      nextReview: Timestamp.fromDate(addDays(new Date(), nextDays)),
+      lastReviewedAt: serverTimestamp(),
+    });
+
+    await setDoc(
+      doc(db, "users", user.uid, "plans", dateKey()),
+      {
+        completedReviews: increment(1),
+        completedMinutes: increment(minutes),
+      },
+      { merge: true }
+    );
+  }
+
   async function reviewWord(known: boolean) {
     if (!user || !dueWords.length) return;
 
     const current = dueWords[reviewIndex];
-
     if (!current) return;
 
     setReviewLoading(true);
 
     try {
-      const currentCount = current.reviewCount || 0;
-      const currentMastery = current.mastery || 0;
-
-      let nextReview: Date;
-      let mastery: number;
-
-      if (known) {
-        const intervals = [1, 3, 7, 14, 30, 60];
-        const days =
-          intervals[Math.min(currentCount, intervals.length - 1)];
-
-        nextReview = addDays(new Date(), days);
-        mastery = Math.min(100, currentMastery + 15);
-      } else {
-        nextReview = addDays(new Date(), 1);
-        mastery = Math.max(0, currentMastery - 10);
-      }
-
-      const ref = doc(
-        db,
-        "users",
-        user.uid,
-        "vocabulary",
-        current.id
-      );
-
-      await updateDoc(ref, {
-        reviewCount: known ? currentCount + 1 : currentCount,
-        mastery,
-        nextReview: Timestamp.fromDate(nextReview),
-        lastReviewedAt: serverTimestamp(),
-      });
-
-      await setDoc(
-        doc(db, "users", user.uid, "plans", dateKey()),
-        {
-          completedReviews: increment(1),
-          completedMinutes: increment(2),
-        },
-        { merge: true }
-      );
+      await recordReview(current, known);
 
       if (reviewIndex >= dueWords.length - 1) {
         setReviewIndex(0);
@@ -725,6 +748,227 @@ ${rows}
     } finally {
       setReviewLoading(false);
     }
+  }
+
+  function getPrimaryMeaning(item: VocabularyItem) {
+    return (
+      item.analysis?.meanings?.[0]?.korean ||
+      item.analysis?.meanings?.[0]?.meaning ||
+      "뜻 정보 없음"
+    ).trim();
+  }
+
+  function createReviewQuiz() {
+    const source = shuffle(dueWords.length ? dueWords : vocabulary).slice(0, Math.min(10, dueWords.length ? dueWords.length : vocabulary.length));
+
+    if (source.length < 1 || vocabulary.length < 3) {
+      setMessage("퀴즈를 만들려면 단어장에 최소 3개의 단어가 필요합니다.");
+      return;
+    }
+
+    const questions: ReviewQuizQuestion[] = source.map((item) => {
+      const meaning = getPrimaryMeaning(item);
+      const direction =
+        reviewQuizDirection === "mixed"
+          ? Math.random() > 0.5
+            ? "wordToMeaning"
+            : "meaningToWord"
+          : reviewQuizDirection;
+
+      const samePartOfSpeech = vocabulary.filter(
+        (other) =>
+          other.id !== item.id &&
+          other.analysis?.partOfSpeech &&
+          other.analysis.partOfSpeech === item.analysis?.partOfSpeech
+      );
+
+      const relatedCandidates = [
+        ...(item.analysis?.synonyms || []),
+        ...(item.analysis?.antonyms || []),
+        ...(item.analysis?.relatedWords || []),
+      ]
+        .map((word) => word.trim())
+        .filter(Boolean)
+        .filter((word) => word.toLowerCase() !== item.word.toLowerCase());
+
+      const wordPool =
+        reviewQuizDifficulty === "easy"
+          ? shuffle(vocabulary.filter((other) => other.id !== item.id))
+          : reviewQuizDifficulty === "hard"
+          ? shuffle([
+              ...samePartOfSpeech,
+              ...samePartOfSpeech,
+              ...vocabulary.filter((other) => other.id !== item.id),
+            ])
+          : shuffle([
+              ...samePartOfSpeech,
+              ...vocabulary.filter((other) => other.id !== item.id),
+            ]);
+
+      // 영어→뜻에서는 반드시 '뜻'끼리 비교하고, 의미→영어에서는
+      // 저장된 단어 + 현재 단어의 유의어/반의어를 활용해 더 헷갈리는 보기를 만든다.
+      const rawDistractors =
+        direction === "wordToMeaning"
+          ? wordPool.map(getPrimaryMeaning)
+          : reviewQuizDifficulty === "hard"
+          ? [...relatedCandidates, ...wordPool.map((other) => other.word)]
+          : wordPool.map((other) => other.word);
+
+      const distractors = rawDistractors
+        .filter((value) => value && value.toLowerCase() !== (direction === "wordToMeaning" ? meaning.toLowerCase() : item.word.toLowerCase()))
+        .filter((value, index, arr) => arr.findIndex((x) => x.toLowerCase() === value.toLowerCase()) === index)
+        .slice(0, 2);
+
+      const fallback = vocabulary
+        .filter((other) => other.id !== item.id)
+        .map(direction === "wordToMeaning" ? getPrimaryMeaning : (other) => other.word)
+        .filter((value) => value && value.toLowerCase() !== (direction === "wordToMeaning" ? meaning.toLowerCase() : item.word.toLowerCase()));
+
+      for (const value of fallback) {
+        if (distractors.length >= 2) break;
+        if (!distractors.some((existing) => existing.toLowerCase() === value.toLowerCase())) {
+          distractors.push(value);
+        }
+      }
+
+      const choices = shuffle([
+        direction === "wordToMeaning" ? meaning : item.word,
+        ...distractors.slice(0, 2),
+      ]).slice(0, 3);
+
+      return {
+        itemId: item.id,
+        word: item.word,
+        meaning,
+        direction,
+        choices,
+        answer: choices.findIndex(
+          (choice) =>
+            choice.toLowerCase() ===
+            (direction === "wordToMeaning" ? meaning : item.word).toLowerCase()
+        ),
+      };
+    });
+
+    setReviewQuizQuestions(questions);
+    setReviewQuizIndex(0);
+    setReviewQuizSelected(null);
+    setReviewQuizScore(0);
+    setReviewQuizAnswered(false);
+    setReviewQuizFinished(false);
+    setReviewQuizWrongIds([]);
+    setReviewQuizTyped("");
+    setReviewQuizTypedCorrect(null);
+    setReviewMode("quiz");
+  }
+
+  async function answerReviewQuiz(selectedIndex: number) {
+    if (reviewQuizAnswered || reviewLoading || !user) return;
+    const currentUser = user;
+
+    const question = reviewQuizQuestions[reviewQuizIndex];
+    const correct = selectedIndex === question.answer;
+    const item = vocabulary.find((entry) => entry.id === question.itemId);
+    if (!item) return;
+
+    setReviewQuizSelected(selectedIndex);
+    setReviewQuizAnswered(true);
+    if (correct) setReviewQuizScore((score) => score + 1);
+    if (!correct) {
+      setReviewQuizWrongIds((ids) => ids.includes(item.id) ? ids : [...ids, item.id]);
+    }
+
+    setReviewLoading(true);
+    try {
+      await recordReview(item, correct);
+      await loadData(currentUser.uid);
+    } catch (error) {
+      console.error(error);
+      setMessage("퀴즈 결과 저장에 실패했습니다.");
+    } finally {
+      setReviewLoading(false);
+    }
+  }
+
+  async function checkReviewTyping() {
+    if (reviewQuizAnswered || reviewLoading || !user) return;
+    const currentUser = user;
+
+    const question = reviewQuizQuestions[reviewQuizIndex];
+    const item = vocabulary.find((entry) => entry.id === question.itemId);
+    if (!item) return;
+
+    const expected = question.direction === "wordToMeaning" ? question.meaning : question.word;
+    const normalizedInput = reviewQuizTyped.trim().toLowerCase().replace(/\s+/g, " ");
+    const normalizedExpected = expected.trim().toLowerCase().replace(/\s+/g, " ");
+    const correct = normalizedInput === normalizedExpected;
+
+    setReviewQuizTypedCorrect(correct);
+    setReviewQuizAnswered(true);
+    if (correct) setReviewQuizScore((score) => score + 1);
+    if (!correct) {
+      setReviewQuizWrongIds((ids) => ids.includes(item.id) ? ids : [...ids, item.id]);
+    }
+
+    setReviewLoading(true);
+    try {
+      await recordReview(item, correct);
+      await loadData(currentUser.uid);
+    } catch (error) {
+      console.error(error);
+      setMessage("퀴즈 결과 저장에 실패했습니다.");
+    } finally {
+      setReviewLoading(false);
+    }
+  }
+
+  function nextReviewQuizQuestion() {
+    if (!reviewQuizAnswered) return;
+
+    if (reviewQuizIndex >= reviewQuizQuestions.length - 1) {
+      setReviewQuizFinished(true);
+      return;
+    }
+
+    setReviewQuizIndex((index) => index + 1);
+    setReviewQuizSelected(null);
+    setReviewQuizAnswered(false);
+    setReviewQuizTyped("");
+    setReviewQuizTypedCorrect(null);
+  }
+
+  function reviewWrongWordsAgain() {
+    const wrongItems = vocabulary.filter((item) => reviewQuizWrongIds.includes(item.id));
+    if (!wrongItems.length) return;
+
+    const questions = wrongItems.map((item) => {
+      const meaning = getPrimaryMeaning(item);
+      const direction: ReviewQuizQuestion["direction"] = Math.random() > 0.5 ? "wordToMeaning" : "meaningToWord";
+      const candidates = shuffle(vocabulary.filter((other) => other.id !== item.id)).slice(0, 2);
+      const distractors = direction === "wordToMeaning"
+        ? candidates.map(getPrimaryMeaning)
+        : candidates.map((other) => other.word);
+      const choices = shuffle([direction === "wordToMeaning" ? meaning : item.word, ...distractors]);
+      return {
+        itemId: item.id,
+        word: item.word,
+        meaning,
+        direction,
+        choices,
+        answer: choices.findIndex((choice) => choice.toLowerCase() === (direction === "wordToMeaning" ? meaning : item.word).toLowerCase()),
+      };
+    });
+
+    setReviewQuizQuestions(questions);
+    setReviewQuizIndex(0);
+    setReviewQuizSelected(null);
+    setReviewQuizScore(0);
+    setReviewQuizAnswered(false);
+    setReviewQuizFinished(false);
+    setReviewQuizWrongIds([]);
+    setReviewQuizTyped("");
+    setReviewQuizTypedCorrect(null);
+    setReviewMode("quiz");
   }
 
   function createTest() {
@@ -1682,93 +1926,191 @@ ${rows}
           <section className="space-y-6">
             <PageTitle
               title="🔄 망각곡선 복습"
-              subtitle="아는 단어는 간격을 늘리고, 어려운 단어는 빠르게 다시 만납니다."
+              subtitle="저장된 단어의 다음 복습일을 기준으로 매일 복습할 단어를 자동으로 모읍니다. 퀴즈는 AI 호출 없이 저장된 데이터를 사용합니다."
             />
 
-            {!currentReview ? (
-              <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-10 text-center">
-                <div className="text-5xl">🎉</div>
-                <h2 className="mt-5 text-2xl font-bold">
-                  오늘 복습할 단어가 없습니다.
-                </h2>
-                <p className="mt-2 text-zinc-500">
-                  새로운 단어를 추가하거나 다른 학습을 진행해보세요.
-                </p>
+            <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => setReviewMode("card")}
+                    className={`rounded-xl px-4 py-2 text-sm ${reviewMode === "card" ? "bg-white text-zinc-900" : "bg-zinc-800 text-zinc-300"}`}
+                  >
+                    📖 카드 복습
+                  </button>
+                  <button
+                    onClick={() => setReviewMode("quiz")}
+                    className={`rounded-xl px-4 py-2 text-sm ${reviewMode === "quiz" ? "bg-white text-zinc-900" : "bg-zinc-800 text-zinc-300"}`}
+                  >
+                    🧠 퀴즈 복습
+                  </button>
+                </div>
 
-                <button
-                  onClick={() => setTab("vocabulary")}
-                  className="mt-6 rounded-xl bg-white px-5 py-3 font-semibold text-zinc-900"
-                >
-                  새 단어 추가
-                </button>
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  <span className="text-zinc-500">난이도</span>
+                  {(["easy", "normal", "hard"] as const).map((level) => (
+                    <button
+                      key={level}
+                      onClick={() => setReviewQuizDifficulty(level)}
+                      className={`rounded-lg px-3 py-1.5 ${reviewQuizDifficulty === level ? "bg-zinc-100 text-zinc-900" : "bg-zinc-800 text-zinc-400"}`}
+                    >
+                      {level === "easy" ? "쉬움" : level === "normal" ? "보통" : "어려움"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {reviewMode === "quiz" && (
+                <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                  <label className="rounded-xl bg-zinc-950 p-3 text-sm">
+                    <span className="text-zinc-500">출제 방향</span>
+                    <select
+                      value={reviewQuizDirection}
+                      onChange={(event) => setReviewQuizDirection(event.target.value as typeof reviewQuizDirection)}
+                      className="mt-2 w-full rounded-lg border border-zinc-700 bg-zinc-900 p-2"
+                    >
+                      <option value="mixed">영어 ↔ 의미 랜덤</option>
+                      <option value="wordToMeaning">영어 → 의미</option>
+                      <option value="meaningToWord">의미 → 영어</option>
+                    </select>
+                  </label>
+
+                  <label className="rounded-xl bg-zinc-950 p-3 text-sm">
+                    <span className="text-zinc-500">답변 방식</span>
+                    <select
+                      value={reviewQuizType}
+                      onChange={(event) => setReviewQuizType(event.target.value as typeof reviewQuizType)}
+                      className="mt-2 w-full rounded-lg border border-zinc-700 bg-zinc-900 p-2"
+                    >
+                      <option value="choice">3지선다</option>
+                      <option value="typing">직접 입력</option>
+                    </select>
+                  </label>
+
+                  <div className="rounded-xl bg-zinc-950 p-3 text-sm">
+                    <div className="text-zinc-500">오늘 복습 대상</div>
+                    <div className="mt-1 text-xl font-bold">{dueWords.length}개</div>
+                    <div className="mt-1 text-xs text-zinc-600">AI 토큰 사용 없음</div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {reviewMode === "card" ? (
+              !currentReview ? (
+                <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-10 text-center">
+                  <div className="text-5xl">🎉</div>
+                  <h2 className="mt-5 text-2xl font-bold">오늘 복습할 단어가 없습니다.</h2>
+                  <p className="mt-2 text-zinc-500">다음 복습일이 되면 자동으로 다시 나타납니다.</p>
+                  <button onClick={() => setTab("vocabulary")} className="mt-6 rounded-xl bg-white px-5 py-3 font-semibold text-zinc-900">새 단어 추가</button>
+                </div>
+              ) : (
+                <div className="mx-auto max-w-2xl rounded-3xl border border-zinc-800 bg-zinc-900 p-8">
+                  <div className="flex justify-between text-sm text-zinc-500">
+                    <span>{reviewIndex + 1} / {dueWords.length}</span>
+                    <span>숙련도 {currentReview.mastery || 0}%</span>
+                  </div>
+                  <div className="py-16 text-center">
+                    <div className="text-5xl font-bold">{currentReview.word}</div>
+                    <button onClick={() => speak(currentReview.word + ". " + (currentReview.analysis?.meanings?.[0]?.example || ""))} className="mt-5 rounded-xl bg-zinc-800 px-4 py-2 text-sm">🔊 발음 듣기</button>
+                    <div className="mt-10 rounded-2xl bg-zinc-950 p-6 text-left">
+                      <div className="text-sm text-zinc-500">의미</div>
+                      <div className="mt-2 text-lg">{getPrimaryMeaning(currentReview)}</div>
+                      {currentReview.analysis?.meanings?.[0]?.example && <div className="mt-4 text-sm italic text-zinc-500">{currentReview.analysis.meanings[0].example}</div>}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button onClick={() => reviewWord(false)} disabled={reviewLoading} className="rounded-2xl border border-red-900/50 bg-red-950/30 px-5 py-4 font-semibold text-red-300">😵 어려워요</button>
+                    <button onClick={() => reviewWord(true)} disabled={reviewLoading} className="rounded-2xl border border-emerald-900/50 bg-emerald-950/30 px-5 py-4 font-semibold text-emerald-300">😊 알고 있어요</button>
+                  </div>
+                </div>
+              )
+            ) : reviewQuizFinished ? (
+              <div className="mx-auto max-w-xl rounded-3xl border border-zinc-800 bg-zinc-900 p-10 text-center">
+                <div className="text-5xl">🏆</div>
+                <h2 className="mt-5 text-3xl font-bold">복습 퀴즈 완료!</h2>
+                <div className="mt-6 text-6xl font-bold">{reviewQuizScore}<span className="text-2xl text-zinc-500"> / {reviewQuizQuestions.length}</span></div>
+                <p className="mt-4 text-zinc-500">틀린 단어는 다음 복습 대상에 더 빨리 돌아옵니다.</p>
+                <div className="mt-8 grid gap-3 sm:grid-cols-2">
+                  <button onClick={createReviewQuiz} className="rounded-xl bg-white px-5 py-3 font-semibold text-zinc-900">새 퀴즈</button>
+                  <button onClick={reviewWrongWordsAgain} disabled={!reviewQuizWrongIds.length} className="rounded-xl bg-zinc-800 px-5 py-3 disabled:opacity-40">틀린 단어 다시 풀기</button>
+                </div>
+              </div>
+            ) : !reviewQuizQuestions.length ? (
+              <div className="mx-auto max-w-2xl rounded-3xl border border-zinc-800 bg-zinc-900 p-10 text-center">
+                <div className="text-5xl">🧠</div>
+                <h2 className="mt-5 text-2xl font-bold">오늘의 복습 퀴즈</h2>
+                <p className="mt-2 text-zinc-500">저장된 단어와 뜻을 이용해 문제를 즉석에서 만듭니다. AI 호출은 하지 않습니다.</p>
+                <button onClick={createReviewQuiz} disabled={dueWords.length === 0 || vocabulary.length < 3} className="mt-6 rounded-xl bg-white px-6 py-3 font-semibold text-zinc-900 disabled:opacity-40">퀴즈 시작</button>
+                {vocabulary.length < 3 && <p className="mt-3 text-sm text-zinc-600">단어장에 최소 3개의 단어가 필요합니다.</p>}
+                {!dueWords.length && vocabulary.length >= 3 && <p className="mt-3 text-sm text-zinc-600">오늘 복습 대상이 없습니다. 카드 복습에서도 동일하게 확인할 수 있습니다.</p>}
               </div>
             ) : (
               <div className="mx-auto max-w-2xl rounded-3xl border border-zinc-800 bg-zinc-900 p-8">
-                <div className="flex justify-between text-sm text-zinc-500">
-                  <span>
-                    {reviewIndex + 1} / {dueWords.length}
-                  </span>
-
-                  <span>
-                    숙련도 {currentReview.mastery || 0}%
-                  </span>
-                </div>
-
-                <div className="py-16 text-center">
-                  <div className="text-5xl font-bold">
-                    {currentReview.word}
-                  </div>
-
-                  <button
-                    onClick={() =>
-                      speak(
-                        currentReview.word +
-                          ". " +
-                          (currentReview.analysis?.meanings?.[0]
-                            ?.example || "")
-                      )
-                    }
-                    className="mt-5 rounded-xl bg-zinc-800 px-4 py-2 text-sm"
-                  >
-                    🔊 발음 듣기
-                  </button>
-
-                  <div className="mt-10 rounded-2xl bg-zinc-950 p-6 text-left">
-                    <div className="text-sm text-zinc-500">
-                      의미
-                    </div>
-
-                    <div className="mt-2 text-lg">
-                      {currentReview.analysis?.meanings?.[0]?.korean ||
-                        currentReview.analysis?.meanings?.[0]?.meaning ||
-                        "뜻 정보 없음"}
-                    </div>
-
-                    {currentReview.analysis?.meanings?.[0]?.example && (
-                      <div className="mt-4 text-sm italic text-zinc-500">
-                        {currentReview.analysis.meanings[0].example}
+                {(() => {
+                  const question = reviewQuizQuestions[reviewQuizIndex];
+                  const item = vocabulary.find((entry) => entry.id === question.itemId);
+                  const correctAnswer = question.direction === "wordToMeaning" ? question.meaning : question.word;
+                  return (
+                    <>
+                      <div className="flex justify-between text-sm text-zinc-500">
+                        <span>문제 {reviewQuizIndex + 1} / {reviewQuizQuestions.length}</span>
+                        <span>점수 {reviewQuizScore}</span>
                       </div>
-                    )}
-                  </div>
-                </div>
+                      <div className="mt-10 text-center">
+                        <div className="text-sm text-zinc-500">{question.direction === "wordToMeaning" ? "다음 단어의 의미는?" : "다음 의미에 해당하는 영어는?"}</div>
+                        <h2 className="mt-4 text-4xl font-bold">{question.direction === "wordToMeaning" ? question.word : question.meaning}</h2>
+                        {item?.analysis?.pronunciationKo && question.direction === "wordToMeaning" && <div className="mt-2 text-sm text-zinc-500">{item.analysis.pronunciationKo}</div>}
+                      </div>
 
-                <div className="grid grid-cols-2 gap-3">
-                  <button
-                    onClick={() => reviewWord(false)}
-                    disabled={reviewLoading}
-                    className="rounded-2xl border border-red-900/50 bg-red-950/30 px-5 py-4 font-semibold text-red-300"
-                  >
-                    😵 어려워요
-                  </button>
+                      {reviewQuizType === "choice" ? (
+                        <div className="mt-8 grid gap-3">
+                          {question.choices.map((choice, index) => {
+                            const selected = reviewQuizSelected === index;
+                            const correct = reviewQuizAnswered && index === question.answer;
+                            return (
+                              <button
+                                key={index}
+                                onClick={() => answerReviewQuiz(index)}
+                                disabled={reviewQuizAnswered || reviewLoading}
+                                className={`rounded-2xl border p-4 text-left transition ${correct ? "border-emerald-500 bg-emerald-950/40" : selected ? "border-red-500 bg-red-950/30" : "border-zinc-800 bg-zinc-950 hover:border-zinc-600"}`}
+                              >
+                                <span className="mr-3 text-zinc-600">{index + 1}</span>{choice}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="mt-8">
+                          <input
+                            value={reviewQuizTyped}
+                            onChange={(event) => setReviewQuizTyped(event.target.value)}
+                            onKeyDown={(event) => { if (event.key === "Enter") checkReviewTyping(); }}
+                            disabled={reviewQuizAnswered || reviewLoading}
+                            placeholder="정답을 직접 입력하세요."
+                            className="w-full rounded-2xl border border-zinc-700 bg-zinc-950 px-5 py-4 outline-none focus:border-zinc-400"
+                          />
+                          <button onClick={checkReviewTyping} disabled={!reviewQuizTyped.trim() || reviewQuizAnswered || reviewLoading} className="mt-3 w-full rounded-xl bg-white px-5 py-3 font-semibold text-zinc-900 disabled:opacity-40">정답 확인</button>
+                        </div>
+                      )}
 
-                  <button
-                    onClick={() => reviewWord(true)}
-                    disabled={reviewLoading}
-                    className="rounded-2xl border border-emerald-900/50 bg-emerald-950/30 px-5 py-4 font-semibold text-emerald-300"
-                  >
-                    😊 알고 있어요
-                  </button>
-                </div>
+                      {reviewQuizAnswered && (
+                        <div className={`mt-5 rounded-2xl p-5 ${((reviewQuizType === "choice" && reviewQuizSelected === question.answer) || (reviewQuizType === "typing" && reviewQuizTypedCorrect)) ? "bg-emerald-950/30" : "bg-red-950/30"}`}>
+                          <div className="font-bold">{((reviewQuizType === "choice" && reviewQuizSelected === question.answer) || (reviewQuizType === "typing" && reviewQuizTypedCorrect)) ? "정답 ✓" : "오답 ✕"}</div>
+                          <div className="mt-2 text-sm text-zinc-300">정답: <strong>{correctAnswer}</strong></div>
+                          {item?.analysis?.meanings?.[0]?.example && <div className="mt-3 text-sm italic text-zinc-500">{item.analysis.meanings[0].example}</div>}
+                          {((reviewQuizType === "choice" && reviewQuizSelected !== question.answer) || (reviewQuizType === "typing" && !reviewQuizTypedCorrect)) && item && (
+                            <button onClick={() => { setAnalysis(item.analysis); setWordInput(item.word); setTab("vocabulary"); }} className="mt-4 rounded-xl bg-zinc-800 px-4 py-2 text-sm">📚 이 단어 자세히 공부하기</button>
+                          )}
+                        </div>
+                      )}
+
+                      {reviewQuizAnswered && (
+                        <button onClick={nextReviewQuizQuestion} className="mt-5 w-full rounded-2xl bg-white px-5 py-4 font-semibold text-zinc-900">{reviewQuizIndex === reviewQuizQuestions.length - 1 ? "결과 보기" : "다음 문제"}</button>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             )}
           </section>

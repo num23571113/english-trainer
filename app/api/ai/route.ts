@@ -95,7 +95,7 @@ Do not put JSON inside code fences.
 
 Include:
 - pronunciation (IPA)
-- Korean pronunciation written in Hangul (pronunciationKo), e.g. join -> 조인
+- Korean pronunciation written in Hangul (pronunciationKo), based on the IPA pronunciation rather than English spelling. It is only a learner-friendly approximation. Distinguish words with different IPA carefully; for example, thorough should be roughly 써러/서러, while throw is roughly 쓰로우.
 - base form / lemma (baseForm): the dictionary headword of the requested word (same as the word itself if it is already the base form)
 - inflections: other inflected forms as plain single words only (e.g. joins, joined, joining, or plural/comparative forms). No labels, no explanations.
 - part of speech
