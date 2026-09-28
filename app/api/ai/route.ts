@@ -94,8 +94,11 @@ Do not use markdown.
 Do not put JSON inside code fences.
 
 Include:
-- pronunciation
+- pronunciation in IPA
+- a short natural Korean pronunciation approximation for Korean learners
 - part of speech
+- dictionary/base form
+- the grammatical/lexical form of the entered word when it is an inflected or derived form
 - major/common meanings
 - Korean meanings
 - example sentences
@@ -107,12 +110,29 @@ Include:
 - interview usage
 - academic usage
 
-Be accurate. If a word has multiple parts of speech or meanings, include them separately.
+Be accurate. If the entered word is an inflected form, identify its correct dictionary/base form.
+Examples:
+- joined -> join
+- joining -> join
+- studies -> study
+- went -> go
+- better -> good when used as the comparative adjective of good
+- worse -> bad when used as the comparative adjective of bad
+
+If the entered word is already the dictionary/base form, set baseForm to the same word.
+If a word has multiple possible grammatical analyses, use the most common analysis for the entered word and mention meaningful ambiguity briefly in the relevant fields.
+
+The Korean pronunciation is only a learner-friendly approximation. Do not pretend it is exact phonetic transcription. Keep it short and natural.
+
+Every item in synonyms, antonyms, relatedWords, and collocations should be a short English word or phrase that can be clicked and searched as a new word. Do not add explanations inside those arrays.
 
 JSON format:
 {
   "word": "",
   "pronunciation": "",
+  "koreanPronunciation": "",
+  "baseForm": "",
+  "wordFormType": "",
   "partOfSpeech": "",
   "meanings": [
     {
@@ -422,7 +442,7 @@ export async function POST(request: Request) {
             messages: [
               {
                 role: "system",
-                content: `Return ONLY one valid JSON object. No markdown, no code fences, no explanation. Analyze the English word and keep every string concise. Use exactly this shape: {"word":"","pronunciation":"","partOfSpeech":"","meanings":[{"meaning":"","korean":"","example":""}],"etymology":"","synonyms":[],"antonyms":[],"relatedWords":[],"collocations":[],"examples":[],"interviewUsage":"","academicUsage":""}`,
+                content: `Return ONLY one valid JSON object. No markdown, no code fences, no explanation. Analyze the English word and keep every string concise. Identify the dictionary/base form if the input is inflected. Use exactly this shape: {"word":"","pronunciation":"","koreanPronunciation":"","baseForm":"","wordFormType":"","partOfSpeech":"","meanings":[{"meaning":"","korean":"","example":""}],"etymology":"","synonyms":[],"antonyms":[],"relatedWords":[],"collocations":[],"examples":[],"interviewUsage":"","academicUsage":""}`,
               },
               {
                 role: "user",
@@ -452,6 +472,28 @@ export async function POST(request: Request) {
       } catch (retryError) {
         console.error("AI JSON retry failed", retryError);
       }
+    }
+
+    if (result && action === "analyzeWord" && typeof result === "object") {
+      const requestedWord = String(body.word || "").trim();
+
+      result = {
+        word: String(result.word || requestedWord),
+        pronunciation: String(result.pronunciation || ""),
+        koreanPronunciation: String(result.koreanPronunciation || ""),
+        baseForm: String(result.baseForm || result.word || requestedWord),
+        wordFormType: String(result.wordFormType || ""),
+        partOfSpeech: String(result.partOfSpeech || ""),
+        meanings: Array.isArray(result.meanings) ? result.meanings : [],
+        etymology: String(result.etymology || ""),
+        synonyms: Array.isArray(result.synonyms) ? result.synonyms : [],
+        antonyms: Array.isArray(result.antonyms) ? result.antonyms : [],
+        relatedWords: Array.isArray(result.relatedWords) ? result.relatedWords : [],
+        collocations: Array.isArray(result.collocations) ? result.collocations : [],
+        examples: Array.isArray(result.examples) ? result.examples : [],
+        interviewUsage: String(result.interviewUsage || ""),
+        academicUsage: String(result.academicUsage || ""),
+      };
     }
 
     if (result === null) {
