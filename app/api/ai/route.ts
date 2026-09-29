@@ -6,6 +6,11 @@ const NVIDIA_TIMEOUT_MS = 45000;
 
 const NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 
+// Warm server instances can reuse recent word analyses without calling NVIDIA again.
+// This is only an optimization; the browser also keeps its own session cache.
+const WORD_CACHE_TTL_MS = 30 * 60 * 1000;
+const wordCache = new Map<string, { createdAt: number; result: unknown }>();
+
 type Action =
   | "analyzeWord"
   | "interview"
@@ -81,36 +86,36 @@ function parseJsonSafely(text: string) {
 
 function buildPrompt(action: Action, input: Record<string, unknown>) {
   if (action === "analyzeWord") {
-    const word = String(input.word || "");
+    const word = String(input.word || "").trim();
 
     return {
       system: `
 You are an expert English dictionary, etymology, vocabulary and interview-English tutor.
 
-Analyze the requested English word in depth.
+Analyze the requested English word in depth. Preserve useful information rather than giving a shallow summary.
 
 Return ONLY valid JSON.
-Do not use markdown.
-Do not put JSON inside code fences.
+Do not use markdown or code fences.
 
-Include:
-- pronunciation (IPA)
-- Korean pronunciation written in Hangul (pronunciationKo), based on the IPA pronunciation rather than English spelling. It is only a learner-friendly approximation. Distinguish words with different IPA carefully; for example, thorough should be roughly 써러/서러, while throw is roughly 쓰로우.
-- base form / lemma (baseForm): the dictionary headword of the requested word (same as the word itself if it is already the base form)
-- inflections: other inflected forms as plain single words only (e.g. joins, joined, joining, or plural/comparative forms). No labels, no explanations.
-- part of speech
-- major/common meanings
-- Korean meanings
-- example sentences
-- etymology and roots
-- synonyms
-- antonyms
-- related words
+Include all of these fields:
+- pronunciation: accurate IPA
+- pronunciationKo: a short Hangul pronunciation based on the IPA, not spelling
+- baseForm: dictionary headword / lemma
+- inflections: other useful inflected forms as plain single words
+- partOfSpeech
+- meanings: all major/common meanings, including separate parts of speech when relevant; each with Korean meaning and a natural example
+- etymology: origin, roots, and useful historical development
+- synonyms: useful non-redundant synonyms
+- antonyms: useful non-redundant antonyms
+- relatedWords
 - collocations
-- interview usage
-- academic usage
+- examples: additional useful example sentences
+- interviewUsage: practical interview English usage
+- academicUsage: practical academic English usage
 
-Be accurate. If a word has multiple parts of speech or meanings, include them separately.
+Keep each individual explanation concise and information-dense. Do not repeat the same explanation in multiple fields. Do not omit a distinct common meaning merely to shorten the answer.
+For lists, prefer useful and clearly different items rather than repetitive near-duplicates.
+For pronunciationKo, distinguish words by IPA: do not infer Korean pronunciation from English spelling alone.
 
 JSON format:
 {
@@ -279,6 +284,7 @@ export async function POST(request: Request) {
 
     const apiKey = process.env.NVIDIA_API_KEY;
     const model = process.env.NVIDIA_MODEL;
+    const wordModel = process.env.NVIDIA_WORD_MODEL?.trim() || model;
 
     if (!apiKey) {
       return NextResponse.json(
@@ -306,7 +312,27 @@ export async function POST(request: Request) {
 
     const prompt = buildPrompt(action, body);
 
+    // Word analysis can optionally use a faster compatible NVIDIA model without
+    // changing the model used by interview/reading features.
+    const requestModel = action === "analyzeWord" ? wordModel : model;
+
+    if (!requestModel) {
+      return NextResponse.json(
+        { error: "NVIDIA_MODEL이 설정되지 않았습니다." },
+        { status: 500 }
+      );
+    }
+
     let response: Response;
+
+    if (action === "analyzeWord") {
+      const cacheKey = String(body.word || "").trim().toLowerCase();
+      const cached = wordCache.get(cacheKey);
+      if (cached && Date.now() - cached.createdAt < WORD_CACHE_TTL_MS) {
+        return NextResponse.json({ result: cached.result, cached: true });
+      }
+      if (cached) wordCache.delete(cacheKey);
+    }
 
     try {
       response = await fetch(NVIDIA_URL, {
@@ -316,7 +342,7 @@ export async function POST(request: Request) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model,
+        model: requestModel,
         messages: [
           {
             role: "system",
@@ -327,7 +353,7 @@ export async function POST(request: Request) {
             content: prompt.user,
           },
         ],
-        temperature: 0.4,
+        temperature: action === "analyzeWord" ? 0.2 : 0.4,
         max_tokens: action === "analyzeWord" ? 3200 : action === "reading" ? 2400 : 1600,
         // Nemotron 3.5 Lightning defaults to "thinking" mode, which burns
         // max_tokens on chain-of-thought before writing the JSON answer and
@@ -424,7 +450,7 @@ export async function POST(request: Request) {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            model,
+            model: requestModel,
             messages: [
               {
                 role: "system",
@@ -470,6 +496,17 @@ export async function POST(request: Request) {
         },
         { status: 500 }
       );
+    }
+
+    if (action === "analyzeWord") {
+      const cacheKey = String(body.word || "").trim().toLowerCase();
+      wordCache.set(cacheKey, { createdAt: Date.now(), result });
+
+      // Keep the in-memory cache bounded.
+      if (wordCache.size > 100) {
+        const oldestKey = wordCache.keys().next().value;
+        if (oldestKey) wordCache.delete(oldestKey);
+      }
     }
 
     return NextResponse.json({
