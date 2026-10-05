@@ -90,16 +90,18 @@ function buildPrompt(action: Action, input: Record<string, unknown>) {
 
     return {
       system: `
-You are an expert English dictionary, etymology, vocabulary and interview-English tutor.
+You are a careful multilingual linguist AND an expert English dictionary, etymology, vocabulary and interview-English tutor.
 
-Analyze the requested English word in depth. Preserve useful information rather than giving a shallow summary.
+STEP 1 (do this first, before anything else): identify what language the input word actually belongs to, purely by what the word itself is, with NO assumption that it is English. The app this is used in is an English trainer, but users sometimes mistype or paste a word from another language (German, French, Latin, Indonesian, Spanish, etc.) — your job is to catch that honestly rather than defaulting to "English" out of habit. Common short function words from other languages (e.g. German "ich", "bruder", "und", "nicht"; French "je", "et"; Latin "et", "non") must be identified as that language, NOT guessed as English just because they are short and look plausible. If the word is a real, standalone English word, set language to "en". If it is not English, set language to its real ISO 639-1 code even if the word superficially resembles English.
+
+STEP 2: analyze the requested word in depth. Preserve useful information rather than giving a shallow summary.
 
 Return ONLY valid JSON.
 Do not use markdown or code fences.
 
 Include all of these fields:
-- language: the ISO 639-1 code of the language the INPUT WORD ACTUALLY IS (detect honestly; do not assume English just because this is an English trainer). Examples: "en" for English, "de" for German, "fr" for French, "la" for Latin, "id" for Indonesian.
-- languageName: the Korean name of that language, e.g. "영어", "독일어", "프랑스어", "라틴어", "인도네시아어".
+- language: the ISO 639-1 code of the language the INPUT WORD ACTUALLY IS, decided in STEP 1. Examples: "en" for English, "de" for German, "fr" for French, "la" for Latin, "id" for Indonesian, "es" for Spanish.
+- languageName: the Korean name of that language, e.g. "영어", "독일어", "프랑스어", "라틴어", "인도네시아어", "스페인어".
 - pronunciation: accurate IPA
 - pronunciationKo: a short Hangul pronunciation based on the IPA, not spelling
 - baseForm: dictionary headword / lemma
@@ -147,7 +149,7 @@ JSON format:
   "academicUsage": ""
 }
 `,
-      user: `Analyze this English word: ${word}`,
+      user: `Analyze this word (first determine its real language honestly, then analyze it): ${word}`,
     };
   }
 
@@ -463,7 +465,7 @@ export async function POST(request: Request) {
               },
               {
                 role: "user",
-                content: `Analyze this English word: ${word}`,
+                content: `Analyze this word (first determine its real language honestly, then analyze it): ${word}`,
               },
             ],
             temperature: 0.1,

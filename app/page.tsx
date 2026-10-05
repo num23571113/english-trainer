@@ -186,7 +186,7 @@ const tabs = [
   ["planner", "📅", "플래너"],
 ] as const;
 
-const WORD_SESSION_CACHE_PREFIX = "english-trainer:word-analysis:v2:";
+const WORD_SESSION_CACHE_PREFIX = "english-trainer:word-analysis:v3:";
 const wordRequestCache = new Map<string, Promise<WordAnalysis>>();
 
 function normalizeWordKey(word: string) {
@@ -308,6 +308,13 @@ export default function Home() {
   const [wordLoading, setWordLoading] = useState(false);
   const [analysis, setAnalysis] = useState<WordAnalysis | null>(null);
   const [dictionaryHit, setDictionaryHit] = useState<string | null>(null);
+
+  // Auto-dismiss the floating notification after a few seconds.
+  useEffect(() => {
+    if (!message) return;
+    const t = window.setTimeout(() => setMessage(""), 6000);
+    return () => window.clearTimeout(t);
+  }, [message]);
   const [highlightWord, setHighlightWord] = useState<string | null>(null);
   const [vocabularySearch, setVocabularySearch] = useState("");
 
@@ -1257,7 +1264,7 @@ ${rows}
 
       <div className="mx-auto max-w-7xl px-4 py-6">
         {message && (
-          <div className="mb-5 flex items-center justify-between gap-3 rounded-2xl border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
+          <div className="fixed right-4 top-28 z-30 flex w-[calc(100%-2rem)] max-w-sm items-center justify-between gap-3 rounded-2xl border border-zinc-200 bg-white p-4 text-sm text-zinc-700 shadow-xl dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200">
             <span>{message}</span>
             <div className="flex shrink-0 items-center gap-2">
               {dictionaryHit && (
