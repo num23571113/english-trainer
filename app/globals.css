@@ -1,7 +1,13 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
   color-scheme: dark;
+}
+
+:root:not(.dark) {
+  color-scheme: light;
 }
 
 * {
@@ -12,6 +18,10 @@ html {
   background: #09090b;
 }
 
+html:not(.dark) {
+  background: #fafafa;
+}
+
 body {
   margin: 0;
   background: #09090b;
@@ -20,6 +30,11 @@ body {
     Arial,
     Helvetica,
     sans-serif;
+}
+
+html:not(.dark) body {
+  background: #fafafa;
+  color: #18181b;
 }
 
 button,

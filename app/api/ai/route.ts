@@ -98,6 +98,8 @@ Return ONLY valid JSON.
 Do not use markdown or code fences.
 
 Include all of these fields:
+- language: the ISO 639-1 code of the language the INPUT WORD ACTUALLY IS (detect honestly; do not assume English just because this is an English trainer). Examples: "en" for English, "de" for German, "fr" for French, "la" for Latin, "id" for Indonesian.
+- languageName: the Korean name of that language, e.g. "영어", "독일어", "프랑스어", "라틴어", "인도네시아어".
 - pronunciation: accurate IPA
 - pronunciationKo: a short Hangul pronunciation based on the IPA, not spelling
 - baseForm: dictionary headword / lemma
@@ -116,10 +118,13 @@ Include all of these fields:
 Keep each individual explanation concise and information-dense. Do not repeat the same explanation in multiple fields. Do not omit a distinct common meaning merely to shorten the answer.
 For lists, prefer useful and clearly different items rather than repetitive near-duplicates.
 For pronunciationKo, distinguish words by IPA: do not infer Korean pronunciation from English spelling alone.
+If the input word is not actually English, still do your best to analyze it (meaning, pronunciation, etc. in its own language where possible), but set "language"/"languageName" honestly so the app can warn the user.
 
 JSON format:
 {
   "word": "",
+  "language": "",
+  "languageName": "",
   "pronunciation": "",
   "pronunciationKo": "",
   "baseForm": "",
@@ -454,7 +459,7 @@ export async function POST(request: Request) {
             messages: [
               {
                 role: "system",
-                content: `Return ONLY one valid JSON object. No markdown, no code fences, no explanation. Analyze the English word and keep every string concise. Use exactly this shape: {"word":"","pronunciation":"","pronunciationKo":"","baseForm":"","inflections":[],"partOfSpeech":"","meanings":[{"meaning":"","korean":"","example":""}],"etymology":"","synonyms":[],"antonyms":[],"relatedWords":[],"collocations":[],"examples":[],"interviewUsage":"","academicUsage":""}`,
+                content: `Return ONLY one valid JSON object. No markdown, no code fences, no explanation. Analyze the word and keep every string concise. Honestly detect the input word's actual language in "language" (ISO 639-1) and "languageName" (Korean name) instead of assuming English. Use exactly this shape: {"word":"","language":"","languageName":"","pronunciation":"","pronunciationKo":"","baseForm":"","inflections":[],"partOfSpeech":"","meanings":[{"meaning":"","korean":"","example":""}],"etymology":"","synonyms":[],"antonyms":[],"relatedWords":[],"collocations":[],"examples":[],"interviewUsage":"","academicUsage":""}`,
               },
               {
                 role: "user",
