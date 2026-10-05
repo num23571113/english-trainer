@@ -61,6 +61,72 @@ type VocabularyItem = {
 
 type ReviewGrade = "again" | "hard" | "good" | "easy";
 
+// AI가 (특히 영어가 아닌 단어에서) 필드 타입을 어기는 경우가 있어서
+// 화면에 그리기 전에 항상 기대하는 타입으로 정리한다. (예: 배열 자리에 문자열/객체)
+function toText(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) return value.map(toText).filter(Boolean).join(", ");
+  if (value && typeof value === "object") {
+    const first = Object.values(value as Record<string, unknown>).find(
+      (v) => typeof v === "string" && v.trim()
+    );
+    return typeof first === "string" ? first.trim() : "";
+  }
+  return "";
+}
+
+function toTextList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(toText).filter(Boolean);
+  const single = toText(value);
+  return single ? [single] : [];
+}
+
+function normalizeAnalysis(raw: any, fallbackWord = ""): WordAnalysis {
+  const src = raw && typeof raw === "object" ? raw : {};
+
+  const rawMeanings = Array.isArray(src.meanings)
+    ? src.meanings
+    : src.meanings
+    ? [src.meanings]
+    : [];
+
+  const meanings: Meaning[] = rawMeanings
+    .map((m: any) =>
+      m && typeof m === "object"
+        ? {
+            meaning: toText(m.meaning),
+            korean: toText(m.korean),
+            example: toText(m.example),
+          }
+        : { meaning: toText(m), korean: "", example: "" }
+    )
+    .filter((m: Meaning) => m.meaning || m.korean);
+
+  return {
+    ...src,
+    word: toText(src.word) || fallbackWord,
+    language: toText(src.language) || undefined,
+    languageName: toText(src.languageName) || undefined,
+    pronunciation: toText(src.pronunciation) || undefined,
+    pronunciationKo: toText(src.pronunciationKo) || undefined,
+    baseForm: toText(src.baseForm) || undefined,
+    inflections: toTextList(src.inflections),
+    partOfSpeech: toText(src.partOfSpeech) || undefined,
+    meanings,
+    etymology: toText(src.etymology),
+    synonyms: toTextList(src.synonyms),
+    antonyms: toTextList(src.antonyms),
+    relatedWords: toTextList(src.relatedWords),
+    collocations: toTextList(src.collocations),
+    examples: toTextList(src.examples),
+    interviewUsage: toText(src.interviewUsage),
+    academicUsage: toText(src.academicUsage),
+  };
+}
+
 function isNonEnglish(analysis?: WordAnalysis | null) {
   if (!analysis?.language) return false;
   const code = analysis.language.trim().toLowerCase();
@@ -186,7 +252,10 @@ const tabs = [
   ["planner", "📅", "플래너"],
 ] as const;
 
-const WORD_SESSION_CACHE_PREFIX = "english-trainer:word-analysis:v3:";
+// 배포 후 반영 여부를 확인하기 위한 버전 표기. 업데이트할 때마다 올립니다.
+const APP_VERSION = "v1.5 (2026-10-06)";
+
+const WORD_SESSION_CACHE_PREFIX = "english-trainer:word-analysis:v4:";
 const wordRequestCache = new Map<string, Promise<WordAnalysis>>();
 
 function normalizeWordKey(word: string) {
@@ -308,6 +377,14 @@ export default function Home() {
   const [wordLoading, setWordLoading] = useState(false);
   const [analysis, setAnalysis] = useState<WordAnalysis | null>(null);
   const [dictionaryHit, setDictionaryHit] = useState<string | null>(null);
+
+  // "저장됨" 알림은 저장 버튼 바로 아래에 표시한다.
+  const [savedNotice, setSavedNotice] = useState("");
+  useEffect(() => {
+    if (!savedNotice) return;
+    const t = window.setTimeout(() => setSavedNotice(""), 4000);
+    return () => window.clearTimeout(t);
+  }, [savedNotice]);
 
   // Auto-dismiss the floating notification after a few seconds.
   useEffect(() => {
@@ -720,7 +797,7 @@ ${rows}
     );
 
     if (existing) {
-      setAnalysis(existing.analysis);
+      setAnalysis(normalizeAnalysis(existing.analysis, existing.word));
       setDictionaryHit(normalized);
       setMessage(
         `"${existing.word}"는 이미 저장된 단어예요. 아래에서 바로 확인하거나 사전 탭에서 볼 수 있어요.`
@@ -731,7 +808,7 @@ ${rows}
     // 같은 브라우저 세션에서 이미 분석한 단어는 NVIDIA를 다시 호출하지 않는다.
     const cached = getCachedWordAnalysis(normalized);
     if (cached) {
-      setAnalysis(cached);
+      setAnalysis(normalizeAnalysis(cached, trimmed));
       setDictionaryHit(null);
       setMessage(`"${trimmed}"의 이전 분석 결과를 바로 불러왔어요.`);
       return;
@@ -751,7 +828,7 @@ ${rows}
         wordRequestCache.set(normalized, request);
       }
 
-      const result = await request;
+      const result = normalizeAnalysis(await request, trimmed);
       setCachedWordAnalysis(normalized, result);
       setAnalysis(result);
     } catch (error: any) {
@@ -810,7 +887,7 @@ ${rows}
         { merge: true }
       );
 
-      setMessage(`"${analysis.word}" 단어가 단어장에 저장되었습니다.`);
+      setSavedNotice(`"${analysis.word}" 단어가 단어장에 저장되었습니다.`);
 
       await loadData(user.uid);
     } catch (error) {
@@ -1206,7 +1283,7 @@ ${rows}
           >
             <div className="text-lg font-bold">📚 English Trainer</div>
             <div className="text-xs text-zinc-500">
-              영어를 꾸준히 쌓는 개인 학습 시스템
+              영어를 꾸준히 쌓는 개인 학습 시스템 · {APP_VERSION}
             </div>
           </button>
 
@@ -1477,26 +1554,35 @@ ${rows}
                       </div>
                     </div>
 
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() =>
-                          speak(
-                            `${analysis.word}. ${
-                              analysis.meanings?.[0]?.example || ""
-                            }`
-                          )
-                        }
-                        className="rounded-xl bg-zinc-800 px-4 py-2 text-sm hover:bg-zinc-700"
-                      >
-                        🔊 듣기
-                      </button>
+                    <div className="flex flex-col items-end gap-2">
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() =>
+                            speak(
+                              `${analysis.word}. ${
+                                analysis.meanings?.[0]?.example || ""
+                              }`
+                            )
+                          }
+                          className="rounded-xl bg-zinc-800 px-4 py-2 text-sm hover:bg-zinc-700"
+                        >
+                          🔊 듣기
+                        </button>
 
-                      <button
-                        onClick={saveWord}
-                        className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-zinc-900"
-                      >
-                        + 단어장 저장
-                      </button>
+                        <button
+                          onClick={saveWord}
+                          className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-zinc-900"
+                        >
+                          + 단어장 저장
+                        </button>
+                      </div>
+
+                      {savedNotice && (
+                        <div className="flex items-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-4 py-2.5 text-sm font-semibold text-emerald-300 shadow-lg shadow-emerald-950/30">
+                          <span>✅</span>
+                          <span>{savedNotice}</span>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -1644,7 +1730,7 @@ ${rows}
                   {filteredVocabulary.map((item) => (
                     <button
                       key={item.id}
-                      onClick={() => setAnalysis(item.analysis)}
+                      onClick={() => setAnalysis(normalizeAnalysis(item.analysis, item.word))}
                       className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4 text-left hover:border-zinc-600"
                     >
                       <div className="font-semibold">{item.word}</div>
@@ -1746,7 +1832,7 @@ ${rows}
                                 key={item.id}
                                 id={`dict-word-${item.word.toLowerCase()}`}
                                 onClick={() => {
-                                  setAnalysis(item.analysis);
+                                  setAnalysis(normalizeAnalysis(item.analysis, item.word));
                                   setWordInput(item.word);
                                   setTab("vocabulary");
                                 }}
