@@ -253,7 +253,7 @@ const tabs = [
 ] as const;
 
 // 배포 후 반영 여부를 확인하기 위한 버전 표기. 업데이트할 때마다 올립니다.
-const APP_VERSION = "v1.5 (2026-10-06)";
+const APP_VERSION = "v1.6 (2026-10-07)";
 
 const WORD_SESSION_CACHE_PREFIX = "english-trainer:word-analysis:v4:";
 const wordRequestCache = new Map<string, Promise<WordAnalysis>>();
@@ -2798,12 +2798,14 @@ function AchievementChart({
         {data.map((d) => (
           <div
             key={d.key}
-            className="group relative flex-1"
+            className={`flex h-full flex-1 items-end rounded-t-sm bg-zinc-200 dark:bg-zinc-800 ${
+              days === 1 ? "mx-auto max-w-24" : ""
+            }`}
             title={`${d.date.toLocaleDateString("ko-KR", { month: "short", day: "numeric" })} · ${d.rate}%`}
           >
             <div
-              className="w-full rounded-t-sm bg-zinc-900 transition-all dark:bg-white"
-              style={{ height: `${Math.max(2, d.rate)}%` }}
+              className="w-full rounded-t-sm bg-emerald-500 transition-all"
+              style={{ height: `${Math.max(d.rate > 0 ? 4 : 0, d.rate)}%` }}
             />
           </div>
         ))}
